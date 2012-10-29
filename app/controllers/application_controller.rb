@@ -1,6 +1,7 @@
 class ApplicationController < ActionController::Base
   before_filter :authenticate_user!
   before_filter :set_current_user_for_mailer
+  before_filter :set_gettext_locale
   protect_from_forgery
   helper_method :abilities, :can?
 

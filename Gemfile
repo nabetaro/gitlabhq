@@ -33,6 +33,7 @@ gem "omniauth-ldap"
 gem 'bootstrap-sass', "1.4.4"
 gem "colored"
 gem 'yaml_db', :git => "https://github.com/gitlabhq/yaml_db.git"
+gem 'gettext_i18n_rails'
 
 group :assets do
   gem "sass-rails",   "3.2.3"
@@ -44,6 +45,8 @@ group :development do
   gem "letter_opener"
   gem "rails-footnotes"
   gem "annotate", :git => "https://github.com/ctran/annotate_models.git"
+  gem 'gettext', '>=1.9.3', :require => false
+  gem 'ruby_parser', :require => false
 end
 
 group :development, :test do
