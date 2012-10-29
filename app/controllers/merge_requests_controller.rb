@@ -1,58 +1,35 @@
-class MergeRequestsController < ApplicationController
-  before_filter :authenticate_user!
-  before_filter :project
+class MergeRequestsController < ProjectResourceController
   before_filter :module_enabled
-  before_filter :merge_request, :only => [:edit, :update, :destroy, :show, :commits, :diffs]
-  layout "project"
-
-  # Authorize
-  before_filter :add_project_abilities
+  before_filter :merge_request, only: [:edit, :update, :destroy, :show, :commits, :diffs, :automerge, :automerge_check, :raw]
+  before_filter :validates_merge_request, only: [:show, :diffs, :raw]
+  before_filter :define_show_vars, only: [:show, :diffs]
 
   # Allow read any merge_request
   before_filter :authorize_read_merge_request!
 
   # Allow write(create) merge_request
-  before_filter :authorize_write_merge_request!, :only => [:new, :create]
+  before_filter :authorize_write_merge_request!, only: [:new, :create]
 
   # Allow modify merge_request
-  before_filter :authorize_modify_merge_request!, :only => [:close, :edit, :update, :sort]
+  before_filter :authorize_modify_merge_request!, only: [:close, :edit, :update, :sort]
 
   # Allow destroy merge_request
-  before_filter :authorize_admin_merge_request!, :only => [:destroy]
+  before_filter :authorize_admin_merge_request!, only: [:destroy]
+
 
   def index
-    @merge_requests = @project.merge_requests
-
-    @merge_requests = case params[:f].to_i
-                      when 1 then @merge_requests
-                      when 2 then @merge_requests.closed
-                      when 2 then @merge_requests.opened.assigned(current_user)
-                      else @merge_requests.opened
-                      end
-
-    @merge_requests = @merge_requests.includes(:author, :project).order("created_at desc")
+    @merge_requests = MergeRequestsLoadContext.new(project, current_user, params).execute
   end
 
   def show
-    unless @project.repo.heads.map(&:name).include?(@merge_request.target_branch) && 
-      @project.repo.heads.map(&:name).include?(@merge_request.source_branch)
-      git_not_found! and return 
-    end
-
-    @note = @project.notes.new(:noteable => @merge_request)
-
-    @commits = @project.repo.
-      commits_between(@merge_request.target_branch, @merge_request.source_branch).
-      map {|c| Commit.new(c)}.
-      sort_by(&:created_at).
-      reverse
-
-    render_full_content
-
     respond_to do |format|
       format.html
       format.js
     end
+  end
+
+  def raw
+    send_file @merge_request.to_raw
   end
 
   def diffs
@@ -64,7 +41,7 @@ class MergeRequestsController < ApplicationController
   end
 
   def new
-    @merge_request = @project.merge_requests.new
+    @merge_request = @project.merge_requests.new(params[:merge_request])
   end
 
   def edit
@@ -74,26 +51,39 @@ class MergeRequestsController < ApplicationController
     @merge_request = @project.merge_requests.new(params[:merge_request])
     @merge_request.author = current_user
 
-    respond_to do |format|
-      if @merge_request.save
-        format.html { redirect_to [@project, @merge_request], notice: 'Merge request was successfully created.' }
-        format.json { render json: @merge_request, status: :created, location: @merge_request }
-      else
-        format.html { render action: "new" }
-        format.json { render json: @merge_request.errors, status: :unprocessable_entity }
-      end
+    if @merge_request.save
+      @merge_request.reload_code
+      redirect_to [@project, @merge_request], notice: 'Merge request was successfully created.'
+    else
+      render action: "new"
     end
   end
 
   def update
-    respond_to do |format|
-      if @merge_request.update_attributes(params[:merge_request].merge(:author_id_of_changes => current_user.id))
-        format.html { redirect_to [@project, @merge_request], notice: 'Merge request was successfully updated.' }
-        format.json { head :ok }
-      else
-        format.html { render action: "edit" }
-        format.json { render json: @merge_request.errors, status: :unprocessable_entity }
-      end
+    if @merge_request.update_attributes(params[:merge_request].merge(author_id_of_changes: current_user.id))
+      @merge_request.reload_code
+      @merge_request.mark_as_unchecked
+      redirect_to [@project, @merge_request], notice: 'Merge request was successfully updated.'
+    else
+      render action: "edit"
+    end
+  end
+
+  def automerge_check
+    if @merge_request.unchecked?
+      @merge_request.check_if_can_be_merged
+    end
+    render json: {state: @merge_request.human_state}
+  end
+
+  def automerge
+    return access_denied! unless can?(current_user, :accept_mr, @project)
+    if @merge_request.open? && @merge_request.can_be_merged?
+      @merge_request.should_remove_source_branch = params[:should_remove_source_branch]
+      @merge_request.automerge!(current_user)
+      @status = true
+    else
+      @status = false
     end
   end
 
@@ -102,8 +92,17 @@ class MergeRequestsController < ApplicationController
 
     respond_to do |format|
       format.html { redirect_to project_merge_requests_url(@project) }
-      format.json { head :ok }
     end
+  end
+
+  def branch_from
+    @commit = project.commit(params[:ref])
+    @commit = CommitDecorator.decorate(@commit)
+  end
+
+  def branch_to
+    @commit = project.commit(params[:ref])
+    @commit = CommitDecorator.decorate(@commit)
   end
 
   protected
@@ -122,5 +121,24 @@ class MergeRequestsController < ApplicationController
 
   def module_enabled
     return render_404 unless @project.merge_requests_enabled
+  end
+
+  def validates_merge_request
+    # Show git not found page if target branch doesnt exist
+    return git_not_found! unless @project.repo.heads.map(&:name).include?(@merge_request.target_branch)
+
+    # Show git not found page if source branch doesnt exist
+    # and there is no saved commits between source & target branch
+    return git_not_found! if !@project.repo.heads.map(&:name).include?(@merge_request.source_branch) && @merge_request.commits.blank?
+  end
+
+  def define_show_vars
+    # Build a note object for comment form
+    @note = @project.notes.new(noteable: @merge_request)
+
+    # Get commits from repository
+    # or from cache if already merged
+    @commits = @merge_request.commits
+    @commits = CommitDecorator.decorate(@commits)
   end
 end

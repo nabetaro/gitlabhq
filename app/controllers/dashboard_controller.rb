@@ -2,36 +2,36 @@ class DashboardController < ApplicationController
   respond_to :html
 
   def index
-    @projects = current_user.projects.all
+    @groups = Group.where(id: current_user.projects.pluck(:group_id))
+    @projects = current_user.projects_with_events
+    @projects = @projects.page(params[:page]).per(30)
 
-    @active_projects = @projects.select(&:last_activity_date).sort_by(&:last_activity_date).reverse
+    @events = Event.in_projects(current_user.project_ids).limit(20).offset(params[:offset] || 0)
+    @last_push = current_user.recent_push
 
-    @merge_requests = MergeRequest.where("author_id = :id or assignee_id = :id", :id => current_user.id).opened.order("created_at DESC").limit(5)
-
-    @user   = current_user
-    @issues = current_user.assigned_issues.opened.order("created_at DESC").limit(5)
-    @issues = @issues.includes(:author, :project)
-
-    @events = Event.where(:project_id => @projects.map(&:id)).recent.limit(20)
+    respond_to do |format|
+      format.html
+      format.js
+      format.atom { render layout: false }
+    end
   end
 
   # Get authored or assigned open merge requests
   def merge_requests
     @projects = current_user.projects.all
-    @merge_requests = MergeRequest.where("author_id = :id or assignee_id = :id", :id => current_user.id).opened.order("created_at DESC").limit(40)
+    @merge_requests = current_user.cared_merge_requests.recent.page(params[:page]).per(20)
   end
 
   # Get only assigned issues
   def issues
     @projects = current_user.projects.all
     @user   = current_user
-    @issues = current_user.assigned_issues.opened.order("created_at DESC").limit(40)
-
+    @issues = current_user.assigned_issues.opened.recent.page(params[:page]).per(20)
     @issues = @issues.includes(:author, :project)
 
     respond_to do |format|
       format.html
-      format.atom { render :layout => false }
+      format.atom { render layout: false }
     end
   end
 end

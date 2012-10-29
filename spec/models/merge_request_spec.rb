@@ -1,31 +1,3 @@
-require 'spec_helper'
-
-describe MergeRequest do
-  describe "Associations" do
-    it { should belong_to(:project) }
-    it { should belong_to(:author) }
-    it { should belong_to(:assignee) }
-  end
-
-  describe "Validation" do
-    it { should validate_presence_of(:target_branch) }
-    it { should validate_presence_of(:source_branch) }
-    it { should validate_presence_of(:title) }
-    it { should validate_presence_of(:author_id) }
-    it { should validate_presence_of(:project_id) }
-    it { should validate_presence_of(:assignee_id) }
-  end
-
-  describe "Scope" do
-    it { MergeRequest.should respond_to :closed }
-    it { MergeRequest.should respond_to :opened }
-  end
-
-  it { Factory.create(:merge_request,
-                      :author => Factory(:user),
-                      :assignee => Factory(:user),
-                      :project => Factory.create(:project)).should be_valid }
-end
 # == Schema Information
 #
 # Table name: merge_requests
@@ -38,7 +10,87 @@ end
 #  assignee_id   :integer
 #  title         :string(255)
 #  closed        :boolean         default(FALSE), not null
-#  created_at    :datetime
-#  updated_at    :datetime
+#  created_at    :datetime        not null
+#  updated_at    :datetime        not null
+#  st_commits    :text(4294967295
+#  st_diffs      :text(4294967295
+#  merged        :boolean         default(FALSE), not null
+#  state         :integer         default(1), not null
 #
 
+require 'spec_helper'
+
+describe MergeRequest do
+  describe "Validation" do
+    it { should validate_presence_of(:target_branch) }
+    it { should validate_presence_of(:source_branch) }
+  end
+
+  describe "Mass assignment" do
+    it { should_not allow_mass_assignment_of(:author_id) }
+    it { should_not allow_mass_assignment_of(:project_id) }
+  end
+
+  describe 'modules' do
+    it { should include_module(IssueCommonality) }
+    it { should include_module(Votes) }
+  end
+
+  describe "#mr_and_commit_notes" do
+    let!(:merge_request) { Factory.create(:merge_request) }
+
+    before do
+      merge_request.stub(:commits) { [merge_request.project.commit] }
+      Factory.create(:note, noteable: merge_request.commits.first)
+      Factory.create(:note, noteable: merge_request)
+    end
+
+    it "should include notes for commits" do
+      merge_request.commits.should_not be_empty
+      merge_request.mr_and_commit_notes.count.should == 2
+    end
+  end
+
+  subject { Factory.create(:merge_request) }
+
+  describe '#is_being_reassigned?' do
+    it 'returns true if the merge_request assignee has changed' do
+      subject.assignee = Factory(:user)
+      subject.is_being_reassigned?.should be_true
+    end
+    it 'returns false if the merge request assignee has not changed' do
+      subject.is_being_reassigned?.should be_false
+    end
+  end
+
+  describe '#is_being_closed?' do
+    it 'returns true if the closed attribute has changed and is now true' do
+      subject.closed = true
+      subject.is_being_closed?.should be_true
+    end
+    it 'returns false if the closed attribute has changed and is now false' do
+      merge_request = Factory.create(:closed_merge_request)
+      merge_request.closed = false
+      merge_request.is_being_closed?.should be_false
+    end
+    it 'returns false if the closed attribute has not changed' do
+      subject.is_being_closed?.should be_false
+    end
+  end
+
+
+  describe '#is_being_reopened?' do
+    it 'returns true if the closed attribute has changed and is now false' do
+      merge_request = Factory.create(:closed_merge_request)
+      merge_request.closed = false
+      merge_request.is_being_reopened?.should be_true
+    end
+    it 'returns false if the closed attribute has changed and is now true' do
+      subject.closed = true
+      subject.is_being_reopened?.should be_false
+    end
+    it 'returns false if the closed attribute has not changed' do
+      subject.is_being_reopened?.should be_false
+    end
+  end
+end

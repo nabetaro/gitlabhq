@@ -2,31 +2,49 @@ class ApplicationController < ActionController::Base
   before_filter :authenticate_user!
   before_filter :set_current_user_for_mailer
   before_filter :set_gettext_locale
+  before_filter :reject_blocked!
+  before_filter :set_current_user_for_observers
+  before_filter :dev_tools if Rails.env == 'development'
+
   protect_from_forgery
+
   helper_method :abilities, :can?
 
-  rescue_from Gitlabhq::Gitolite::AccessDenied do |exception|
-    render "errors/gitolite", :layout => "error"
+  rescue_from Gitlab::Gitolite::AccessDenied do |exception|
+    render "errors/gitolite", layout: "errors", status: 500
+  end
+
+  rescue_from Encoding::CompatibilityError do |exception|
+    render "errors/encoding", layout: "errors", status: 500
   end
 
   rescue_from ActiveRecord::RecordNotFound do |exception|
-    render "errors/not_found", :layout => "error", :status => 404
+    render "errors/not_found", layout: "errors", status: 404
   end
-
-  layout :layout_by_resource
 
   protected
 
-  def layout_by_resource
-    if devise_controller?
-      "devise"
-    else
-      "application"
+  def reject_blocked!
+    if current_user && current_user.blocked
+      sign_out current_user
+      flash[:alert] = "Your account was blocked"
+      redirect_to new_user_session_path
     end
   end
 
-  def set_current_user_for_mailer
-    MailerObserver.current_user = current_user
+  def after_sign_in_path_for resource
+    if resource.is_a?(User) && resource.respond_to?(:blocked) && resource.blocked
+      sign_out resource
+      flash[:alert] = "Your account was blocked"
+      new_user_session_path
+    else
+      super
+    end
+  end
+
+  def set_current_user_for_observers
+    MergeRequestObserver.current_user = current_user
+    IssueObserver.current_user = current_user
   end
 
   def abilities
@@ -38,16 +56,12 @@ class ApplicationController < ActionController::Base
   end
 
   def project
-    @project ||= current_user.projects.find_by_code(params[:project_id])
+    @project ||= current_user.projects.find_by_code(params[:project_id] || params[:id])
     @project || render_404
   end
 
   def add_project_abilities
     abilities << Ability
-  end
-
-  def authenticate_admin!
-    return render_404 unless current_user.is_admin?
   end
 
   def authorize_project!(action)
@@ -59,15 +73,15 @@ class ApplicationController < ActionController::Base
   end
 
   def access_denied!
-    render "errors/access_denied", :layout => "error", :status => 404
+    render "errors/access_denied", layout: "errors", status: 404
   end
 
   def not_found!
-    render "errors/not_found", :layout => "error", :status => 404
+    render "errors/not_found", layout: "errors", status: 404
   end
 
   def git_not_found!
-    render "errors/git_not_found", :layout => "error", :status => 404
+    render "errors/git_not_found", layout: "errors", status: 404
   end
 
   def method_missing(method_sym, *arguments, &block)
@@ -78,22 +92,12 @@ class ApplicationController < ActionController::Base
     end
   end
 
-  def load_refs
-    unless params[:ref].blank?
-      @ref = params[:ref]
-    else
-      @branch = params[:branch].blank? ? nil : params[:branch]
-      @tag = params[:tag].blank? ? nil : params[:tag]
-      @ref = @branch || @tag || @project.try(:default_branch) || Repository.default_ref
-    end
-  end
-
   def render_404
-    render :file => File.join(Rails.root, "public", "404"), :layout => false, :status => "404"
+    render file: Rails.root.join("public", "404"), layout: false, status: "404"
   end
 
   def require_non_empty_project
-    redirect_to @project unless @project.repo_exists? && @project.has_commits?
+    redirect_to @project if @project.empty_repo?
   end
 
   def no_cache_headers
@@ -102,7 +106,7 @@ class ApplicationController < ActionController::Base
     response.headers["Expires"] = "Fri, 01 Jan 1990 00:00:00 GMT"
   end
 
-  def render_full_content
-    @full_content = true
+  def dev_tools
+    Rack::MiniProfiler.authorize_request
   end
 end

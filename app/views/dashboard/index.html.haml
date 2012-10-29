@@ -1,68 +1,44 @@
-- if current_user.require_ssh_key?
-  .alert-message.block-message.error
-    %p  
-      _("You wont be able to pull/push project code unless you")  
-      = link_to new_key_path, :class => "vlink" do 
-        add new key
-      to your profile
+- if @projects.any?
+  .projects
+    .activities.span8
+      = render "events/event_last_push", event: @last_push
+      = render 'shared/no_ssh'
+      - if @events.any?
+        .content_list= render @events
+      - else
+        %h4.nothing_here_message Projects activity will be displayed here
+      .loading.hide
+    .side
+      - if @groups.present?
+        = render "groups", groups: @groups
+      = render "projects", projects: @projects
+      %div
+        %span.rss-icon
+          = link_to dashboard_path(:atom, { private_token: current_user.private_token }) do
+            = image_tag "rss_ui.png", title: "feed"
+            %strong News Feed
 
-%div.dashboard_category
-  %h3
-    %span.ico.projects
-    = link_to "Projects" , "#projects", :id => "projects"
-    %small
-      ( most recent )
-
-  %strong.right
-    = link_to projects_path do 
-      Projects list &rarr; 
-  %hr
-  .row
-    .dashboard_block
-      .row
-        .span10= render "dashboard/projects_feed"
-        .span4.right
-          - if current_user.can_create_project?
-            .alert-message.block-message.warning
-              You can create up to
-              = current_user.projects_limit
-              projects. Click on link below to add a new one
-              .link_holder
-                = link_to new_project_path, :class => "" do 
-                  New Project » 
+      %hr
+      .gitlab-promo
+        = link_to "Homepage", "http://gitlabhq.com"
+        = link_to "Blog", "http://blog.gitlabhq.com"
+        = link_to "@gitlabhq", "https://twitter.com/gitlabhq"
 
 
-- if @merge_requests.any?
-  %div.dashboard_category
-    %h3
-      = link_to "Merge Requests" , "#merge_requests", :id => "merge_requests"
-      
-      %small ( authored or assigned to you )
-    %strong.right
-      = link_to dashboard_merge_requests_path do 
-        Vist merge requests page &rarr; 
-    %hr
-    .row
-      .dashboard_block= render "dashboard/merge_requests_feed"
+- else
+  %h3.nothing_here_message There are no projects you have access to.
+  %br
+  %h4.nothing_here_message
+    - if current_user.can_create_project?
+      You can create up to
+      = current_user.projects_limit
+      projects. Click on button below to add a new one
+      .link_holder
+        = link_to new_project_path, class: "btn primary" do
+          New Project »
+    - else
+      If you will be added to project - it will be displayed here
 
-- if @issues.any?
-  %div.dashboard_category
-    %h3
-      = link_to "Issues" , "#issues", :id => "issues"
-      %small ( assigned to you )
-    %strong.right
-      = link_to dashboard_issues_path do 
-        Vist issues page &rarr; 
-    %hr
-    .row
-      .dashboard_block= render "dashboard/issues_feed"
 
-- if @events.any?
-  %div.dashboard_category
-    %h3
-      %span.ico.activities
-      = link_to "Activities" , "#activities", :id => "activities"
-
-    %hr
-    .row
-      .dashboard_block= render "dashboard/events_feed"
+:javascript
+  $(function(){ Pager.init(20); });

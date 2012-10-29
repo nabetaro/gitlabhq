@@ -1,34 +1,42 @@
-= form_for(@project, :remote => true) do |f|
+= form_for(@project, remote: true) do |f|
   - if @project.errors.any?
     .alert-message.block-message.error
       %ul
         - @project.errors.full_messages.each do |msg|
           %li= msg
-  .clearfix
-    = f.label :name
-    .input= f.text_field :name, :placeholder => "Example Project"
-  .clearfix
-    = f.label :path do 
-      Path
+  .clearfix.project_name_holder
+    = f.label :name do
+      Project name is
     .input
-      .input-prepend
-        %span.add-on= "#{GIT_HOST["git_user"]}@#{GIT_HOST["host"]}:"
-        = f.text_field :path, :placeholder => "example_project", :disabled => !@project.new_record?
-  .clearfix
-    = f.label :code do 
-      Code
-    .input
-      .input-prepend
-        %span.add-on= "http://#{GIT_HOST["host"]}/"
-        = f.text_field :code, :placeholder => "example"
+      = f.text_field :name, placeholder: "Example Project", class: "xxlarge"
 
-  - unless @project.new_record? || @project.heads.empty?  
+  %hr
+  .adv_settings
+    %h6 Advanced settings:
     .clearfix
-      = f.label :default_branch, "Default Branch"
-      .input= f.select(:default_branch, @project.heads.map(&:name), {}, :style => "width:210px;")
+      = f.label :path do
+        Path
+      .input
+        .input-prepend
+          %strong
+            = text_field_tag :ppath, @project.path_to_repo, class: "xlarge", disabled: true
+    .clearfix
+      = f.label :code do
+        URL
+      .input
+        .input-prepend
+          %span.add-on= web_app_url
+          = f.text_field :code, placeholder: "example"
 
-    .alert-message.block-message.warning
-      %h5 Features
+    - unless @project.new_record? || @project.heads.empty?
+      .clearfix
+        = f.label :default_branch, "Default Branch"
+        .input= f.select(:default_branch, @project.heads.map(&:name), {}, style: "width:210px;")
+
+  - unless @project.new_record?
+    %hr
+    .adv_settings
+      %h6 Features:
 
       .clearfix
         = f.label :issues_enabled, "Issues"
@@ -41,20 +49,16 @@
       .clearfix
         = f.label :wall_enabled, "Wall"
         .input= f.check_box :wall_enabled
-      
+
       .clearfix
         = f.label :wiki_enabled, "Wiki"
         .input= f.check_box :wiki_enabled
-    
-  .clearfix
-    = f.label :description
-    .input= f.text_area :description, :placeholder => "project description", :class => "xlarge", :rows => 4
 
   %br
-  
+
   .actions
-    = f.submit 'Save', :class => "btn primary"
-    = link_to 'Cancel', @project, :class => "btn"
+    = f.submit 'Save', class: "btn save-btn"
+    = link_to 'Cancel', @project, class: "btn"
     - unless @project.new_record?
       .right
-        = link_to 'Remove', @project, :confirm => 'Are you sure?', :method => :delete, :class => "btn danger"
+        = link_to 'Remove', @project, confirm: 'Are you sure?', method: :delete, class: "btn danger"

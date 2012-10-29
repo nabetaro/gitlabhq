@@ -1,75 +1,153 @@
-require File.join(Rails.root, 'spec', 'factory')
-
-Factory.add(:project, Project) do |obj|
-  obj.name = Faker::Internet.user_name
-  obj.path = 'legit'
-  obj.owner = Factory(:user)
-  obj.code = 'LGT'
+# Backwards compatibility with the old method
+def Factory(type, *args)
+  FactoryGirl.create(type, *args)
 end
 
-Factory.add(:public_project, Project) do |obj|
-  obj.name = Faker::Internet.user_name
-  obj.path = 'legit'
-  obj.private_flag = false
-  obj.owner = Factory(:user)
-  obj.code = 'LGT'
+module Factory
+  def self.create(type, *args)
+    FactoryGirl.create(type, *args)
+  end
+
+  def self.new(type, *args)
+    FactoryGirl.build(type, *args)
+  end
+  def self.attributes(type, *args)
+    FactoryGirl.attributes_for(type, *args)
+  end
 end
 
-Factory.add(:user, User) do |obj|
-  obj.email = Faker::Internet.email
-  obj.password = "123456"
-  obj.name = Faker::Name.name
-  obj.password_confirmation = "123456"
-end
+FactoryGirl.define do
+  sequence :sentence, aliases: [:title, :content] do
+    Faker::Lorem.sentence
+  end
 
-Factory.add(:admin, User) do |obj|
-  obj.email = Faker::Internet.email
-  obj.password = "123456"
-  obj.name = Faker::Name.name
-  obj.password_confirmation = "123456"
-  obj.admin = true
-end
+  sequence :name, aliases: [:file_name] do
+    Faker::Name.name
+  end
 
-Factory.add(:issue, Issue) do |obj|
-  obj.title = Faker::Lorem.sentence
-  obj.author = Factory :user
-  obj.assignee = Factory :user
-end
+  sequence(:url) { Faker::Internet.uri('http') }
 
-Factory.add(:merge_request, MergeRequest) do |obj|
-  obj.title = Faker::Lorem.sentence
-  obj.author = Factory :user
-  obj.assignee = Factory :user
-  obj.source_branch = "master"
-  obj.target_branch = "master"
-  obj.closed = false
-end
+  factory :user, aliases: [:author, :assignee, :owner] do
+    email { Faker::Internet.email }
+    name
+    password "123456"
+    password_confirmation { password }
 
-Factory.add(:snippet, Snippet) do |obj|
-  obj.title = Faker::Lorem.sentence
-  obj.file_name = Faker::Lorem.sentence
-  obj.content = Faker::Lorem.sentences
-end
+    trait :admin do
+      admin true
+    end
 
-Factory.add(:note, Note) do |obj|
-  obj.note = Faker::Lorem.sentence
-end
+    factory :admin, traits: [:admin]
+  end
 
-Factory.add(:key, Key) do |obj|
-  obj.title = "Example key"
-  obj.key = File.read(File.join(Rails.root, "db", "pkey.example"))
-end
+  factory :project do
+    sequence(:name) { |n| "project#{n}" }
+    path { name.downcase.gsub(/\s/, '_') }
+    code { name.downcase.gsub(/\s/, '_') }
+    owner
+  end
 
-Factory.add(:web_hook, WebHook) do |obj|
-  obj.url = Faker::Internet.url
-end
+  factory :group do
+    sequence(:name) { |n| "group#{n}" }
+    code { name.downcase.gsub(/\s/, '_') }
+    owner
+  end
 
-Factory.add(:wikis, WebHook) do |obj|
-  obj.title = Faker::Lorem.sentence
-  obj.content = Faker::Lorem.sentence
-end
+  factory :users_project do
+    user
+    project
+  end
 
-Factory.add(:event, Event) do |obj|
-  obj.title = Faker::Lorem.sentence
-  obj.project = Factory(:project)
+  factory :issue do
+    title
+    author
+    project
+
+    trait :closed do
+      closed true
+    end
+
+    factory :closed_issue, traits: [:closed]
+  end
+
+  factory :merge_request do
+    title
+    author
+    project
+    source_branch "master"
+    target_branch "stable"
+
+    trait :closed do
+      closed true
+    end
+
+    factory :closed_merge_request, traits: [:closed]
+  end
+
+  factory :note do
+    project
+    note "Note"
+  end
+
+  factory :event do
+    factory :closed_issue_event do
+      project
+      action Event::Closed
+      target factory: :closed_issue
+      author factory: :user
+    end
+  end
+
+  factory :key do
+    title
+    key do
+      "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAIEAiPWx6WM4lhHNedGfBpPJNPpZ7yKu+dnn1SJejgt4596k6YjzGGphH2TUxwKzxcKDKKezwkpfnxPkSMkuEspGRt/aZZ9wa++Oi7Qkr8prgHc4soW6NUlfDzpvZK2H5E7eQaSeP3SAwGmQKUFHCddNaP0L+hM7zhFNzjFvpaMgJw0="
+    end
+
+    factory :deploy_key do
+      project
+    end
+
+    factory :personal_key do
+      user
+    end
+
+    factory :key_with_a_space_in_the_middle do
+      key do
+        "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAIEAiPWx6WM4lhHNedGfBpPJNPpZ7yKu+dnn1SJejgt4596k6YjzGGphH2TUxwKzxcKDKKezwkpfnxPkSMkuEspGRt/aZZ9wa ++Oi7Qkr8prgHc4soW6NUlfDzpvZK2H5E7eQaSeP3SAwGmQKUFHCddNaP0L+hM7zhFNzjFvpaMgJw0="
+      end
+    end
+  end
+
+  factory :milestone do
+    title
+    project
+  end
+
+  factory :system_hook do
+    url
+  end
+
+  factory :project_hook do
+    url
+  end
+
+  factory :wiki do
+    title
+    content
+    user
+  end
+
+  factory :snippet do
+    project
+    author
+    title
+    content
+    file_name
+  end
+
+  factory :protected_branch do
+    name
+    project
+  end
 end

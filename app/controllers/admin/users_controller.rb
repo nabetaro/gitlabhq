@@ -1,10 +1,9 @@
-class Admin::UsersController < ApplicationController
-  layout "admin"
-  before_filter :authenticate_user!
-  before_filter :authenticate_admin!
-
+class Admin::UsersController < AdminController
   def index
-    @admin_users = User.page(params[:page])
+    @admin_users = User.scoped
+    @admin_users = @admin_users.filter(params[:filter])
+    @admin_users = @admin_users.search(params[:name]) if params[:name].present?
+    @admin_users = @admin_users.order("updated_at DESC").page(params[:page])
   end
 
   def show
@@ -21,7 +20,7 @@ class Admin::UsersController < ApplicationController
     @admin_user = User.find(params[:id])
 
     UsersProject.user_bulk_import(
-      @admin_user, 
+      @admin_user,
       params[:project_ids],
       params[:project_access]
     )
@@ -31,17 +30,37 @@ class Admin::UsersController < ApplicationController
 
 
   def new
-    @admin_user = User.new(:projects_limit => 10)
+    @admin_user = User.new({ projects_limit: Gitlab.config.default_projects_limit }, as: :admin)
   end
 
   def edit
     @admin_user = User.find(params[:id])
   end
 
+  def block
+    @admin_user = User.find(params[:id])
+
+    if @admin_user.block
+      redirect_to :back, alert: "Successfully blocked"
+    else
+      redirect_to :back, alert: "Error occured. User was not blocked"
+    end
+  end
+
+  def unblock
+    @admin_user = User.find(params[:id])
+
+    if @admin_user.update_attribute(:blocked, false)
+      redirect_to :back, alert: "Successfully unblocked"
+    else
+      redirect_to :back, alert: "Error occured. User was not unblocked"
+    end
+  end
+
   def create
     admin = params[:user].delete("admin")
 
-    @admin_user = User.new(params[:user])
+    @admin_user = User.new(params[:user], as: :admin)
     @admin_user.admin = (admin && admin.to_i > 0)
 
     respond_to do |format|
@@ -57,6 +76,7 @@ class Admin::UsersController < ApplicationController
 
   def update
     admin = params[:user].delete("admin")
+
     if params[:user][:password].blank?
       params[:user].delete(:password)
       params[:user].delete(:password_confirmation)
@@ -66,7 +86,7 @@ class Admin::UsersController < ApplicationController
     @admin_user.admin = (admin && admin.to_i > 0)
 
     respond_to do |format|
-      if @admin_user.update_attributes(params[:user])
+      if @admin_user.update_attributes(params[:user], as: :admin)
         format.html { redirect_to [:admin, @admin_user], notice: 'User was successfully updated.' }
         format.json { head :ok }
       else

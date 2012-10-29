@@ -1,49 +1,199 @@
+require Rails.root.join("app/models/commit")
+
 class MergeRequest < ActiveRecord::Base
-  belongs_to :project
-  belongs_to :author, :class_name => "User"
-  belongs_to :assignee, :class_name => "User"
-  has_many :notes, :as => :noteable, :dependent => :destroy
+  include IssueCommonality
+  include Votes
 
-  attr_protected :author, :author_id, :project, :project_id
-  attr_accessor :author_id_of_changes
+  attr_accessible :title, :assignee_id, :closed, :target_branch, :source_branch,
+                  :author_id_of_changes
 
-  validates_presence_of :project_id
-  validates_presence_of :assignee_id
-  validates_presence_of :author_id
-  validates_presence_of :source_branch
-  validates_presence_of :target_branch
+  attr_accessor :should_remove_source_branch
 
-  delegate :name,
-           :email,
-           :to => :author,
-           :prefix => true
+  BROKEN_DIFF = "--broken-diff"
 
-  delegate :name,
-           :email,
-           :to => :assignee,
-           :prefix => true
+  UNCHECKED = 1
+  CAN_BE_MERGED = 2
+  CANNOT_BE_MERGED = 3
 
-  validates :title,
-            :presence => true,
-            :length   => { :within => 0..255 }
+  serialize :st_commits
+  serialize :st_diffs
 
-  scope :opened, where(:closed => false)
-  scope :closed, where(:closed => true)
-  scope :assigned, lambda { |u| where(:assignee_id => u.id)}
+  validates :source_branch, presence: true
+  validates :target_branch, presence: true
+  validate :validate_branches
 
-  def new?
-    today? && created_at == updated_at
+  def self.find_all_by_branch(branch_name)
+    where("source_branch LIKE :branch OR target_branch LIKE :branch", branch: branch_name)
+  end
+
+  def human_state
+    states = {
+      CAN_BE_MERGED =>  "can_be_merged",
+      CANNOT_BE_MERGED => "cannot_be_merged",
+      UNCHECKED => "unchecked"
+    }
+    states[self.state]
+  end
+
+  def validate_branches
+    if target_branch == source_branch
+      errors.add :base, "You can not use same branch for source and target branches"
+    end
+  end
+
+  def reload_code
+    self.reloaded_commits
+    self.reloaded_diffs
+  end
+
+  def unchecked?
+    state == UNCHECKED
+  end
+
+  def mark_as_unchecked
+    self.state = UNCHECKED
+    self.save
+  end
+
+  def can_be_merged?
+    state == CAN_BE_MERGED
+  end
+
+  def check_if_can_be_merged
+    self.state = if Gitlab::Satellite::MergeAction.new(self.author, self).can_be_merged?
+                   CAN_BE_MERGED
+                 else
+                   CANNOT_BE_MERGED
+                 end
+    self.save
   end
 
   def diffs
-    commits = project.repo.commits_between(target_branch, source_branch).map {|c| Commit.new(c)}
-    diffs = project.repo.diff(commits.first.prev_commit.id, commits.last.id) rescue []
+    st_diffs || []
+  end
+
+  def reloaded_diffs
+    if open? && unmerged_diffs.any?
+      self.st_diffs = unmerged_diffs
+      self.save
+    end
+
+  rescue Grit::Git::GitTimeout
+    self.st_diffs = [BROKEN_DIFF]
+    self.save
+  end
+
+  def broken_diffs?
+    diffs == [BROKEN_DIFF]
+  end
+
+  def valid_diffs?
+    !broken_diffs?
+  end
+
+  def unmerged_diffs
+    # Only show what is new in the source branch compared to the target branch, not the other way around.
+    # The linex below with merge_base is equivalent to diff with three dots (git diff branch1...branch2)
+    # From the git documentation: "git diff A...B" is equivalent to "git diff $(git-merge-base A B) B"
+    common_commit = project.repo.git.native(:merge_base, {}, [target_branch, source_branch]).strip
+    diffs = project.repo.diff(common_commit, source_branch)
   end
 
   def last_commit
-    project.commit(source_branch)
+    commits.first
+  end
+
+  def merged?
+    merged && merge_event
+  end
+
+  def merge_event
+    self.project.events.where(target_id: self.id, target_type: "MergeRequest", action: Event::Merged).last
+  end
+
+  def closed_event
+    self.project.events.where(target_id: self.id, target_type: "MergeRequest", action: Event::Closed).last
+  end
+
+  def commits
+    st_commits || []
+  end
+
+  def probably_merged?
+    unmerged_commits.empty? &&
+      commits.any? && open?
+  end
+
+  def open?
+    !closed
+  end
+
+  def mark_as_merged!
+    self.merged = true
+    self.closed = true
+    save
+  end
+
+  def mark_as_unmergable
+    self.state = CANNOT_BE_MERGED
+    self.save
+  end
+
+  def reloaded_commits
+    if open? && unmerged_commits.any?
+      self.st_commits = unmerged_commits
+      save
+    end
+    commits
+  end
+
+  def unmerged_commits
+    self.project.repo.
+      commits_between(self.target_branch, self.source_branch).
+      map {|c| Commit.new(c)}.
+      sort_by(&:created_at).
+      reverse
+  end
+
+  def merge!(user_id)
+    self.mark_as_merged!
+    Event.create(
+      project: self.project,
+      action: Event::Merged,
+      target_id: self.id,
+      target_type: "MergeRequest",
+      author_id: user_id
+    )
+  end
+
+  def automerge!(current_user)
+    if Gitlab::Satellite::MergeAction.new(current_user, self).merge! && self.unmerged_commits.empty?
+      self.merge!(current_user.id)
+      true
+    end
+  rescue
+    self.mark_as_unmergable
+    false
+  end
+
+  def to_raw
+    FileUtils.mkdir_p(Rails.root.join("tmp", "patches"))
+    patch_path = Rails.root.join("tmp", "patches", "merge_request_#{self.id}.patch")
+
+    from = commits.last.id
+    to = source_branch
+
+    project.repo.git.run('', "format-patch" , " > #{patch_path.to_s}", {}, ["#{from}..#{to}", "--stdout"])
+
+    patch_path
+  end
+
+  def mr_and_commit_notes
+    commit_ids = commits.map(&:id)
+    Note.where("(noteable_type = 'MergeRequest' AND noteable_id = :mr_id) OR (noteable_type = 'Commit' AND noteable_id IN (:commit_ids))", mr_id: id, commit_ids: commit_ids)
   end
 end
+
 # == Schema Information
 #
 # Table name: merge_requests
@@ -56,7 +206,11 @@ end
 #  assignee_id   :integer
 #  title         :string(255)
 #  closed        :boolean         default(FALSE), not null
-#  created_at    :datetime
-#  updated_at    :datetime
+#  created_at    :datetime        not null
+#  updated_at    :datetime        not null
+#  st_commits    :text(4294967295
+#  st_diffs      :text(4294967295
+#  merged        :boolean         default(FALSE), not null
+#  state         :integer         default(1), not null
 #
 

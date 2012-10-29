@@ -1,19 +1,14 @@
-require File.join(Rails.root, 'lib', 'graph_commit')
+require Rails.root.join('lib', 'gitlab', 'graph_commit')
 
-class ProjectsController < ApplicationController
-  before_filter :project, :except => [:index, :new, :create]
-  layout :determine_layout
+class ProjectsController < ProjectResourceController
+  skip_before_filter :project, only: [:new, :create]
 
   # Authorize
-  before_filter :add_project_abilities
-  before_filter :authorize_read_project!, :except => [:index, :new, :create]
-  before_filter :authorize_admin_project!, :only => [:edit, :update, :destroy]
-  before_filter :require_non_empty_project, :only => [:blob, :tree, :graph]
+  before_filter :authorize_read_project!, except: [:index, :new, :create]
+  before_filter :authorize_admin_project!, only: [:edit, :update, :destroy]
+  before_filter :require_non_empty_project, only: [:blob, :tree, :graph]
 
-  def index
-    @projects = current_user.projects
-    @projects = @projects.select(&:last_activity_date).sort_by(&:last_activity_date).reverse
-  end
+  layout 'application', only: [:new, :create]
 
   def new
     @project = Project.new
@@ -23,33 +18,16 @@ class ProjectsController < ApplicationController
   end
 
   def create
-    @project = Project.new(params[:project])
-    @project.owner = current_user
-
-    Project.transaction do
-      @project.save!
-      @project.users_projects.create!(:project_access => UsersProject::MASTER, :user => current_user)
-
-      # when project saved no team member exist so 
-      # project repository should be updated after first user add
-      @project.update_repository
-    end
+    @project = Project.create_by_user(params[:project], current_user)
 
     respond_to do |format|
-      if @project.valid?
-        format.html { redirect_to @project, notice: 'Project was successfully created.' }
-        format.js
-      else
-        format.html { render action: "new" }
-        format.js
+      format.html do
+        if @project.saved?
+          redirect_to(@project, notice: 'Project was successfully created.')
+        else
+          render action: "new"
+        end
       end
-    end
-  rescue Gitlabhq::Gitolite::AccessDenied
-    render :js => "location.href = '#{errors_githost_path}'" and return
-  rescue StandardError => ex
-    @project.errors.add(:base, "Cant save project. Please try again later")
-    respond_to do |format|
-      format.html { render action: "new" }
       format.js
     end
   end
@@ -57,7 +35,7 @@ class ProjectsController < ApplicationController
   def update
     respond_to do |format|
       if project.update_attributes(params[:project])
-        format.html { redirect_to edit_project_path(project), :notice => 'Project was successfully updated.' }
+        format.html { redirect_to edit_project_path(project), notice: 'Project was successfully updated.' }
         format.js
       else
         format.html { render action: "edit" }
@@ -68,11 +46,12 @@ class ProjectsController < ApplicationController
 
   def show
     limit = (params[:limit] || 20).to_i
-    @events = @project.events.recent.limit(limit)
+    @events = @project.events.recent.limit(limit).offset(params[:offset] || 0)
 
     respond_to do |format|
-      format.html do 
-         if @project.repo_exists? && @project.has_commits?
+      format.html do
+         unless @project.empty_repo?
+           @last_push = current_user.recent_push(@project.id)
            render :show
          else
            render "projects/empty"
@@ -100,8 +79,7 @@ class ProjectsController < ApplicationController
   end
 
   def graph
-    render_full_content
-    @days_json, @commits_json = GraphCommit.to_graph(project)
+    @days_json, @commits_json = Gitlab::GraphCommit.to_graph(project)
   end
 
   def destroy
@@ -112,22 +90,7 @@ class ProjectsController < ApplicationController
     UsersProject.set_callback(:destroy, :after, :update_repository)
 
     respond_to do |format|
-      format.html { redirect_to projects_url }
-    end
-  end
-
-  protected
-
-  def project
-    @project ||= Project.find_by_code(params[:id])
-    @project || render_404
-  end
-
-  def determine_layout
-    if @project && !@project.new_record?
-      "project"
-    else
-      "application"
+      format.html { redirect_to root_path }
     end
   end
 end
